@@ -170,6 +170,11 @@ ${fileTreeStr}
 ## CONTEÚDO DOS ARQUIVOS DO PROJETO:
 ${filesContext}
 
+## REGRA MAIS IMPORTANTE DE TODAS:
+VOCÊ **SEMPRE** DEVE incluir um bloco \`\`\`json com o array "files" na sua resposta quando o usuário pedir QUALQUER modificação.
+Se você não incluir o bloco JSON, NENHUMA alteração será aplicada e o usuário ficará frustrado.
+NUNCA responda apenas com texto quando uma modificação é solicitada. SEMPRE inclua o JSON.
+
 ## REGRAS CRÍTICAS (SIGA RIGOROSAMENTE):
 
 ### 1. SOBRE CAMINHOS DE ARQUIVOS:
@@ -185,12 +190,12 @@ ${filesContext}
 - NÃO remova funcionalidades existentes a menos que o usuário peça explicitamente.
 
 ### 3. SOBRE A RESPOSTA:
-- Primeiro, explique BREVEMENTE (2-3 frases) o que você vai fazer.
-- Depois, inclua o bloco JSON com as alterações.
+- Primeiro, explique em 1-2 frases CURTAS o que você vai fazer.
+- Depois, IMEDIATAMENTE inclua o bloco JSON com as alterações.
 - NÃO mostre o código fora do bloco JSON. O sistema aplica automaticamente.
-- Seja direto e objetivo. O usuário quer ver o resultado, não explicações longas.
+- NUNCA diga "vou fazer X" sem incluir o JSON. Sempre inclua o JSON junto.
 
-### 4. FORMATO JSON OBRIGATÓRIO:
+### 4. FORMATO JSON OBRIGATÓRIO (SEMPRE INCLUIR):
 \`\`\`json
 {
   "files": [
@@ -223,8 +228,11 @@ ${filesContext}
 - NUNCA tente baixar ou converter a imagem. Use a URL exatamente como recebida.
 - Exemplo: se o usuário enviar uma imagem e disser "coloque no header", adicione <img src="URL_DA_IMAGEM" /> no componente do header.
 - Se o usuário enviar uma imagem sem instrução específica, pergunte onde ele quer que a imagem seja colocada.
-- A URL da imagem será algo como: https://aezldaroxystvuyxhama.supabase.co/storage/v1/object/public/chat-images/...
 - Garanta que a imagem tenha classes Tailwind adequadas (object-cover, rounded, etc.) para boa apresentação.
+
+### 8. LEMBRETE FINAL:
+Se o usuário pediu uma modificação e você NÃO incluiu o bloco \`\`\`json com "files", SUA RESPOSTA ESTÁ ERRADA.
+Volte e adicione o JSON. SEMPRE.
 
 Responda sempre em português brasileiro. Seja preciso e eficiente.`;
 
