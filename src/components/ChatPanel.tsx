@@ -6,7 +6,8 @@ import { Progress } from "@/components/ui/progress";
 import { supabase } from "@/integrations/supabase/client";
 
 const cleanResponse = (text: string): string => {
-  let cleaned = text.replace(/```json\s*\{[\s\S]*?"files"[\s\S]*?\}\s*```/g, "");
+  let cleaned = text.replace(/```json\s*\{[\s\S]*?"files"\s*:\s*\[[\s\S]*?\]\s*\}\s*```/g, "");
+  cleaned = cleaned.replace(/```\s*\{[\s\S]*?"files"\s*:\s*\[[\s\S]*?\]\s*\}\s*```/g, "");
   cleaned = cleaned.replace(/\n\n[✅⚠️].*$/gm, "");
   return cleaned.trim();
 };
@@ -22,7 +23,7 @@ interface ChatImage {
 }
 
 const ChatPanel = () => {
-  const { messages, addMessage, updateLastAssistantMessage, isLoading, setIsLoading, config } = useAppContext();
+  const { messages, addMessage, updateLastAssistantMessage, isLoading, setIsLoading, config, setPreviewUrl, previewUrl } = useAppContext();
   const [input, setInput] = useState("");
   const [fileOps, setFileOps] = useState<FileOp[]>([]);
   const [progress, setProgress] = useState(0);
@@ -241,12 +242,30 @@ const ChatPanel = () => {
   };
 
   const applyFileChanges = async (response: string) => {
-    const jsonMatch = response.match(/```json\s*(\{[\s\S]*?"files"[\s\S]*?\})\s*```/);
-    if (!jsonMatch || !config) return;
+    // Try multiple patterns to find the JSON block
+    let jsonMatch = response.match(/```json\s*(\{[\s\S]*?"files"\s*:\s*\[[\s\S]*?\]\s*\})\s*```/);
+    if (!jsonMatch) {
+      jsonMatch = response.match(/```\s*(\{[\s\S]*?"files"\s*:\s*\[[\s\S]*?\]\s*\})\s*```/);
+    }
+    if (!jsonMatch) {
+      // Try to find raw JSON without code blocks
+      jsonMatch = response.match(/(\{[\s\S]*?"files"\s*:\s*\[\s*\{[\s\S]*?"path"[\s\S]*?\]\s*\})/);
+    }
+    
+    if (!jsonMatch || !config) {
+      // If user asked for changes but AI didn't produce JSON
+      if (response.length > 50) {
+        updateLastAssistantMessage(cleanResponse(response) + "\n\n⚠️ A IA não gerou alterações de código nesta resposta. Tente ser mais específico no seu pedido.");
+      }
+      return;
+    }
 
     try {
       const { files } = JSON.parse(jsonMatch[1]);
-      if (!Array.isArray(files) || files.length === 0) return;
+      if (!Array.isArray(files) || files.length === 0) {
+        updateLastAssistantMessage(cleanResponse(response) + "\n\n⚠️ Nenhum arquivo para alterar foi encontrado na resposta.");
+        return;
+      }
 
       const ops: FileOp[] = files.filter((f: any) => f.path && f.content).map((f: any) => ({
         path: f.path, status: "pending" as const,
@@ -267,50 +286,73 @@ const ChatPanel = () => {
 
         try {
           let sha: string | undefined;
-          if (file.action === "update" || file.action !== "create") {
-            try {
-              const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
-              const readRes = await fetch(CHAT_URL, {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-                },
-                body: JSON.stringify({
-                  messages: file.path, githubToken: config.token,
-                  repoOwner: config.repoOwner, repoName: config.repoName, action: "read-file",
-                }),
-              });
-              if (readRes.ok) {
-                const data = await readRes.json();
-                sha = data.sha;
-              } else if (file.action === "update") {
-                setFileOps(prev => prev.map((op, idx) => idx === i ? { ...op, status: "error" } : op));
-                errorCount++; continue;
-              }
-            } catch { /* ignore */ }
-          }
+          // Always try to get SHA first (for both create and update)
+          try {
+            const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
+            const readRes = await fetch(CHAT_URL, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+              },
+              body: JSON.stringify({
+                messages: file.path, githubToken: config.token,
+                repoOwner: config.repoOwner, repoName: config.repoName, action: "read-file",
+              }),
+            });
+            if (readRes.ok) {
+              const data = await readRes.json();
+              sha = data.sha;
+            }
+          } catch { /* file doesn't exist yet, that's ok */ }
 
           const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
-          const writeRes = await fetch(CHAT_URL, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-            },
-            body: JSON.stringify({
-              messages: { path: file.path, content: file.content, sha },
-              githubToken: config.token, repoOwner: config.repoOwner,
-              repoName: config.repoName, action: "write-file",
-            }),
-          });
+          
+          // Retry write up to 2 times
+          let writeSuccess = false;
+          for (let attempt = 0; attempt < 3 && !writeSuccess; attempt++) {
+            const writeRes = await fetch(CHAT_URL, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+              },
+              body: JSON.stringify({
+                messages: { path: file.path, content: file.content, sha },
+                githubToken: config.token, repoOwner: config.repoOwner,
+                repoName: config.repoName, action: "write-file",
+              }),
+            });
 
-          if (writeRes.ok) {
-            successCount++;
-            setFileOps(prev => prev.map((op, idx) => idx === i ? { ...op, status: "done" } : op));
-          } else {
-            errorCount++;
-            setFileOps(prev => prev.map((op, idx) => idx === i ? { ...op, status: "error" } : op));
+            if (writeRes.ok) {
+              writeSuccess = true;
+              successCount++;
+              setFileOps(prev => prev.map((op, idx) => idx === i ? { ...op, status: "done" } : op));
+            } else if (attempt === 2) {
+              errorCount++;
+              setFileOps(prev => prev.map((op, idx) => idx === i ? { ...op, status: "error" } : op));
+            } else {
+              // Wait before retry
+              await new Promise(r => setTimeout(r, 1000));
+              // Re-fetch SHA in case it changed
+              try {
+                const readRes = await fetch(CHAT_URL, {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+                  },
+                  body: JSON.stringify({
+                    messages: file.path, githubToken: config.token,
+                    repoOwner: config.repoOwner, repoName: config.repoName, action: "read-file",
+                  }),
+                });
+                if (readRes.ok) {
+                  const data = await readRes.json();
+                  sha = data.sha;
+                }
+              } catch { /* ignore */ }
+            }
           }
         } catch {
           errorCount++;
@@ -322,7 +364,26 @@ const ChatPanel = () => {
       if (successCount > 0) statusMsg += `\n\n✅ ${successCount} arquivo(s) aplicado(s) com sucesso!`;
       if (errorCount > 0) statusMsg += `\n\n⚠️ ${errorCount} arquivo(s) com erro.`;
       if (statusMsg) updateLastAssistantMessage(cleanResponse(response) + statusMsg);
-    } catch { /* ignore */ }
+
+      // Auto-refresh preview if there were successful changes
+      if (successCount > 0 && previewUrl) {
+        // Trigger a small delay then refresh by changing the key
+        setTimeout(() => {
+          // Force preview refresh by re-setting URL
+          const currentUrl = previewUrl;
+          setPreviewUrl("");
+          setTimeout(() => setPreviewUrl(currentUrl), 100);
+        }, 2000);
+      }
+
+      // Dispatch event to refresh file explorer
+      if (successCount > 0) {
+        window.dispatchEvent(new CustomEvent("files-updated"));
+      }
+    } catch (e) {
+      console.error("Error parsing AI response JSON:", e);
+      updateLastAssistantMessage(cleanResponse(response) + "\n\n⚠️ Erro ao processar as alterações da IA. Tente novamente.");
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

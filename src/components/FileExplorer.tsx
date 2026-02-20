@@ -52,6 +52,13 @@ const FileExplorer = () => {
     if (config) loadRoot();
   }, [config]);
 
+  // Auto-refresh when files are updated via chat
+  useEffect(() => {
+    const handler = () => { loadRoot(); };
+    window.addEventListener("files-updated", handler);
+    return () => window.removeEventListener("files-updated", handler);
+  }, [config]);
+
   const toggleDir = async (node: FileNode, parentPath: string[]) => {
     if (node.type !== "dir") {
       // Read file
