@@ -53,16 +53,30 @@ const ChatPanel = () => {
     setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const uploadImage = async (file: File): Promise<string | null> => {
+  const uploadImage = async (file: File, retries = 2): Promise<string | null> => {
     const ext = file.name.split(".").pop() || "png";
     const path = `${crypto.randomUUID()}.${ext}`;
-    const { error } = await supabase.storage.from("chat-images").upload(path, file);
-    if (error) {
-      console.error("Upload error:", error);
-      return null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const { error } = await supabase.storage.from("chat-images").upload(path, file, {
+          cacheControl: "3600",
+          upsert: false,
+        });
+        if (error) {
+          console.error(`Upload attempt ${attempt + 1} error:`, error);
+          if (attempt === retries) return null;
+          await new Promise(r => setTimeout(r, 1000));
+          continue;
+        }
+        const { data } = supabase.storage.from("chat-images").getPublicUrl(path);
+        return data.publicUrl;
+      } catch (e) {
+        console.error(`Upload attempt ${attempt + 1} exception:`, e);
+        if (attempt === retries) return null;
+        await new Promise(r => setTimeout(r, 1000));
+      }
     }
-    const { data } = supabase.storage.from("chat-images").getPublicUrl(path);
-    return data.publicUrl;
+    return null;
   };
 
   const handleSend = async () => {
@@ -82,6 +96,16 @@ const ChatPanel = () => {
       setProgress(5);
       const uploads = await Promise.all(attachedImages.map((img) => uploadImage(img.file)));
       imageUrls = uploads.filter(Boolean) as string[];
+      if (imageUrls.length === 0 && attachedImages.length > 0) {
+        addMessage("assistant", "❌ Erro ao enviar as imagens. Verifique sua conexão e tente novamente.");
+        setIsLoading(false);
+        setProgress(0);
+        setProcessingLabel("");
+        return;
+      }
+      if (imageUrls.length < attachedImages.length) {
+        addMessage("assistant", `⚠️ ${attachedImages.length - imageUrls.length} imagem(ns) não foi(ram) enviada(s). Continuando com as que foram enviadas com sucesso.`);
+      }
       setAttachedImages([]);
     }
 
