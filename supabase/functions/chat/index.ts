@@ -244,6 +244,7 @@ Responda sempre em português brasileiro. Seja preciso e eficiente.`;
       },
       body: JSON.stringify({
         model: "google/gemini-2.5-pro",
+        max_tokens: 16000,
         messages: [
           { role: "system", content: systemPrompt },
           ...messages,

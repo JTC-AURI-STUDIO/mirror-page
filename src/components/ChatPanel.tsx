@@ -23,7 +23,7 @@ interface ChatImage {
 }
 
 const ChatPanel = () => {
-  const { messages, addMessage, updateLastAssistantMessage, isLoading, setIsLoading, config, setPreviewUrl, previewUrl } = useAppContext();
+  const { messages, addMessage, updateLastAssistantMessage, isLoading, setIsLoading, config, setPreviewUrl, previewUrl, setSelectedFile } = useAppContext();
   const [input, setInput] = useState("");
   const [fileOps, setFileOps] = useState<FileOp[]>([]);
   const [progress, setProgress] = useState(0);
@@ -241,76 +241,102 @@ const ChatPanel = () => {
     setTimeout(() => { setProgress(0); setFileOps([]); }, 2000);
   };
 
-  const applyFileChanges = async (response: string) => {
-    // Try multiple patterns to find the JSON block
-    let jsonMatch = response.match(/```json\s*(\{[\s\S]*?"files"\s*:\s*\[[\s\S]*?\]\s*\})\s*```/);
-    if (!jsonMatch) {
-      jsonMatch = response.match(/```\s*(\{[\s\S]*?"files"\s*:\s*\[[\s\S]*?\]\s*\})\s*```/);
-    }
-    if (!jsonMatch) {
-      // Try to find raw JSON without code blocks
-      jsonMatch = response.match(/(\{[\s\S]*?"files"\s*:\s*\[\s*\{[\s\S]*?"path"[\s\S]*?\]\s*\})/);
-    }
+  const extractJsonFromResponse = (response: string): any | null => {
+    // Pattern 1: ```json { "files": [...] } ```
+    let match = response.match(/```json\s*(\{[\s\S]*?"files"\s*:\s*\[[\s\S]*?\]\s*\})\s*```/);
+    if (match) { try { return JSON.parse(match[1]); } catch {} }
+
+    // Pattern 2: ``` { "files": [...] } ```
+    match = response.match(/```\s*(\{[\s\S]*?"files"\s*:\s*\[[\s\S]*?\]\s*\})\s*```/);
+    if (match) { try { return JSON.parse(match[1]); } catch {} }
+
+    // Pattern 3: raw JSON
+    match = response.match(/(\{[\s\S]*?"files"\s*:\s*\[\s*\{[\s\S]*?"path"[\s\S]*?\]\s*\})/);
+    if (match) { try { return JSON.parse(match[1]); } catch {} }
+
+    // Pattern 4: Try to fix common JSON issues (trailing commas, control chars)
+    const jsonStart = response.indexOf('{"files"');
+    if (jsonStart === -1) return null;
     
-    if (!jsonMatch || !config) {
-      // If user asked for changes but AI didn't produce JSON
+    // Find matching closing brace
+    let depth = 0;
+    let end = -1;
+    for (let i = jsonStart; i < response.length; i++) {
+      if (response[i] === '{') depth++;
+      if (response[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+    }
+    if (end === -1) return null; // truncated JSON
+    
+    let jsonStr = response.substring(jsonStart, end + 1);
+    jsonStr = jsonStr.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']').replace(/[\x00-\x1F\x7F]/g, '');
+    try { return JSON.parse(jsonStr); } catch { return null; }
+  };
+
+  const applyFileChanges = async (response: string) => {
+    const parsed = extractJsonFromResponse(response);
+    
+    if (!parsed || !config) {
       if (response.length > 50) {
         updateLastAssistantMessage(cleanResponse(response) + "\n\n⚠️ A IA não gerou alterações de código nesta resposta. Tente ser mais específico no seu pedido.");
       }
       return;
     }
 
-    try {
-      const { files } = JSON.parse(jsonMatch[1]);
-      if (!Array.isArray(files) || files.length === 0) {
-        updateLastAssistantMessage(cleanResponse(response) + "\n\n⚠️ Nenhum arquivo para alterar foi encontrado na resposta.");
-        return;
-      }
+    const { files } = parsed;
+    if (!Array.isArray(files) || files.length === 0) {
+      updateLastAssistantMessage(cleanResponse(response) + "\n\n⚠️ Nenhum arquivo para alterar foi encontrado na resposta.");
+      return;
+    }
 
-      const ops: FileOp[] = files.filter((f: any) => f.path && f.content).map((f: any) => ({
-        path: f.path, status: "pending" as const,
-      }));
-      setFileOps(ops);
+    const validFiles = files.filter((f: any) => f.path && f.content);
+    if (validFiles.length === 0) {
+      updateLastAssistantMessage(cleanResponse(response) + "\n\n⚠️ Arquivos sem conteúdo válido na resposta.");
+      return;
+    }
 
-      let successCount = 0;
-      let errorCount = 0;
+    const ops: FileOp[] = validFiles.map((f: any) => ({
+      path: f.path, status: "pending" as const,
+    }));
+    setFileOps(ops);
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        if (!file.path || !file.content) continue;
+    let successCount = 0;
+    let errorCount = 0;
+    let lastSuccessFile: { path: string; content: string } | null = null;
 
-        const fileProgress = 60 + ((i / files.length) * 35);
-        setProgress(fileProgress);
-        setProcessingLabel(`Escrevendo ${file.path}...`);
-        setFileOps(prev => prev.map((op, idx) => idx === i ? { ...op, status: "writing" } : op));
+    for (let i = 0; i < validFiles.length; i++) {
+      const file = validFiles[i];
+      const fileProgress = 60 + ((i / validFiles.length) * 35);
+      setProgress(fileProgress);
+      setProcessingLabel(`Escrevendo ${file.path}...`);
+      setFileOps(prev => prev.map((op, idx) => idx === i ? { ...op, status: "writing" } : op));
 
+      try {
+        let sha: string | undefined;
+        const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
+        
+        // Get SHA
         try {
-          let sha: string | undefined;
-          // Always try to get SHA first (for both create and update)
-          try {
-            const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
-            const readRes = await fetch(CHAT_URL, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-              },
-              body: JSON.stringify({
-                messages: file.path, githubToken: config.token,
-                repoOwner: config.repoOwner, repoName: config.repoName, action: "read-file",
-              }),
-            });
-            if (readRes.ok) {
-              const data = await readRes.json();
-              sha = data.sha;
-            }
-          } catch { /* file doesn't exist yet, that's ok */ }
+          const readRes = await fetch(CHAT_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+            },
+            body: JSON.stringify({
+              messages: file.path, githubToken: config.token,
+              repoOwner: config.repoOwner, repoName: config.repoName, action: "read-file",
+            }),
+          });
+          if (readRes.ok) {
+            const data = await readRes.json();
+            sha = data.sha;
+          }
+        } catch { /* new file */ }
 
-          const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
-          
-          // Retry write up to 2 times
-          let writeSuccess = false;
-          for (let attempt = 0; attempt < 3 && !writeSuccess; attempt++) {
+        // Write with retry
+        let writeSuccess = false;
+        for (let attempt = 0; attempt < 3 && !writeSuccess; attempt++) {
+          try {
             const writeRes = await fetch(CHAT_URL, {
               method: "POST",
               headers: {
@@ -327,62 +353,72 @@ const ChatPanel = () => {
             if (writeRes.ok) {
               writeSuccess = true;
               successCount++;
+              lastSuccessFile = { path: file.path, content: file.content };
               setFileOps(prev => prev.map((op, idx) => idx === i ? { ...op, status: "done" } : op));
-            } else if (attempt === 2) {
-              errorCount++;
-              setFileOps(prev => prev.map((op, idx) => idx === i ? { ...op, status: "error" } : op));
             } else {
-              // Wait before retry
-              await new Promise(r => setTimeout(r, 1000));
-              // Re-fetch SHA in case it changed
-              try {
-                const readRes = await fetch(CHAT_URL, {
-                  method: "POST",
-                  headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-                  },
-                  body: JSON.stringify({
-                    messages: file.path, githubToken: config.token,
-                    repoOwner: config.repoOwner, repoName: config.repoName, action: "read-file",
-                  }),
-                });
-                if (readRes.ok) {
-                  const data = await readRes.json();
-                  sha = data.sha;
-                }
-              } catch { /* ignore */ }
+              const errText = await writeRes.text();
+              console.error(`Write attempt ${attempt + 1} failed:`, errText);
+              if (attempt < 2) {
+                await new Promise(r => setTimeout(r, 1000));
+                // Re-fetch SHA
+                try {
+                  const readRes = await fetch(CHAT_URL, {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json",
+                      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+                    },
+                    body: JSON.stringify({
+                      messages: file.path, githubToken: config.token,
+                      repoOwner: config.repoOwner, repoName: config.repoName, action: "read-file",
+                    }),
+                  });
+                  if (readRes.ok) {
+                    const data = await readRes.json();
+                    sha = data.sha;
+                  }
+                } catch { /* ignore */ }
+              }
             }
+          } catch (e) {
+            console.error(`Write attempt ${attempt + 1} exception:`, e);
+            if (attempt < 2) await new Promise(r => setTimeout(r, 1000));
           }
-        } catch {
+        }
+        
+        if (!writeSuccess) {
           errorCount++;
           setFileOps(prev => prev.map((op, idx) => idx === i ? { ...op, status: "error" } : op));
         }
+      } catch {
+        errorCount++;
+        setFileOps(prev => prev.map((op, idx) => idx === i ? { ...op, status: "error" } : op));
       }
+    }
 
-      let statusMsg = "";
-      if (successCount > 0) statusMsg += `\n\n✅ ${successCount} arquivo(s) aplicado(s) com sucesso!`;
-      if (errorCount > 0) statusMsg += `\n\n⚠️ ${errorCount} arquivo(s) com erro.`;
-      if (statusMsg) updateLastAssistantMessage(cleanResponse(response) + statusMsg);
+    let statusMsg = "";
+    if (successCount > 0) statusMsg += `\n\n✅ ${successCount} arquivo(s) commitado(s) no GitHub com sucesso!`;
+    if (errorCount > 0) statusMsg += `\n\n⚠️ ${errorCount} arquivo(s) com erro.`;
+    if (successCount > 0) statusMsg += `\n\n📁 Verifique o código na aba "Código" ou no GitHub.`;
+    if (statusMsg) updateLastAssistantMessage(cleanResponse(response) + statusMsg);
 
-      // Auto-refresh preview if there were successful changes
-      if (successCount > 0 && previewUrl) {
-        // Trigger a small delay then refresh by changing the key
-        setTimeout(() => {
-          // Force preview refresh by re-setting URL
-          const currentUrl = previewUrl;
-          setPreviewUrl("");
-          setTimeout(() => setPreviewUrl(currentUrl), 100);
-        }, 2000);
-      }
+    // Auto-show the last modified file in Code tab
+    if (lastSuccessFile) {
+      setSelectedFile(lastSuccessFile);
+    }
 
-      // Dispatch event to refresh file explorer
-      if (successCount > 0) {
-        window.dispatchEvent(new CustomEvent("files-updated"));
-      }
-    } catch (e) {
-      console.error("Error parsing AI response JSON:", e);
-      updateLastAssistantMessage(cleanResponse(response) + "\n\n⚠️ Erro ao processar as alterações da IA. Tente novamente.");
+    // Auto-refresh preview
+    if (successCount > 0 && previewUrl) {
+      setTimeout(() => {
+        const currentUrl = previewUrl;
+        setPreviewUrl("");
+        setTimeout(() => setPreviewUrl(currentUrl), 100);
+      }, 3000);
+    }
+
+    // Refresh file explorer
+    if (successCount > 0) {
+      window.dispatchEvent(new CustomEvent("files-updated"));
     }
   };
 
