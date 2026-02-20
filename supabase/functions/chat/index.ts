@@ -216,6 +216,16 @@ ${filesContext}
 - Identifique imports e exports para não quebrar nada.
 - Se o arquivo importa componentes de outros arquivos, verifique se esses componentes existem.
 
+### 7. SOBRE IMAGENS ENVIADAS PELO USUÁRIO:
+- Quando o usuário enviar uma imagem junto com a mensagem, ele está pedindo para usar essa imagem no projeto.
+- A imagem já está hospedada em uma URL pública. Você receberá a URL da imagem como parte da mensagem.
+- Use essa URL DIRETAMENTE no código como src da tag <img> ou como background-image no CSS.
+- NUNCA tente baixar ou converter a imagem. Use a URL exatamente como recebida.
+- Exemplo: se o usuário enviar uma imagem e disser "coloque no header", adicione <img src="URL_DA_IMAGEM" /> no componente do header.
+- Se o usuário enviar uma imagem sem instrução específica, pergunte onde ele quer que a imagem seja colocada.
+- A URL da imagem será algo como: https://aezldaroxystvuyxhama.supabase.co/storage/v1/object/public/chat-images/...
+- Garanta que a imagem tenha classes Tailwind adequadas (object-cover, rounded, etc.) para boa apresentação.
+
 Responda sempre em português brasileiro. Seja preciso e eficiente.`;
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
