@@ -4,7 +4,8 @@ import SetupPanel from "@/components/SetupPanel";
 import ChatPanel from "@/components/ChatPanel";
 import FileExplorer from "@/components/FileExplorer";
 import PreviewPanel from "@/components/PreviewPanel";
-import { Zap, LogOut, User } from "lucide-react";
+import ChatHistory from "@/components/ChatHistory";
+import { Zap, LogOut, User, History } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
@@ -13,6 +14,7 @@ const WorkspaceLayout = () => {
   const { config, setConfig } = useAppContext();
   const [session, setSession] = useState<Session | null>(null);
   const [username, setUsername] = useState("");
+  const [showHistory, setShowHistory] = useState(true);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -57,6 +59,16 @@ const WorkspaceLayout = () => {
           </span>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowHistory(h => !h)}
+            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs transition-all ${
+              showHistory ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+            }`}
+            title="Histórico de Chats"
+          >
+            <History className="h-3.5 w-3.5" />
+            Histórico
+          </button>
           {username && (
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <User className="h-3.5 w-3.5" />
@@ -75,6 +87,12 @@ const WorkspaceLayout = () => {
 
       {/* Main Content */}
       <div className="flex flex-1 overflow-hidden">
+        {/* History Panel */}
+        {showHistory && (
+          <div className="w-52 shrink-0 border-r border-border bg-card overflow-hidden">
+            <ChatHistory />
+          </div>
+        )}
         <div className="w-56 shrink-0 border-r border-border bg-card overflow-hidden">
           <FileExplorer />
         </div>
