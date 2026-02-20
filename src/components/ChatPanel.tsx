@@ -253,35 +253,46 @@ const ChatPanel = () => {
   };
 
   const extractJsonFromResponse = (response: string): any | null => {
-    // Step 1: Strip markdown code blocks to get raw JSON
+    console.log("[CodeAI] Extraindo JSON da resposta. Tamanho:", response.length);
+    console.log("[CodeAI] Contém 'files'?", response.includes('"files"'));
+    console.log("[CodeAI] Contém 'path'?", response.includes('"path"'));
+    console.log("[CodeAI] Contém 'content'?", response.includes('"content"'));
+    
     let raw = response;
     
-    // Remove ```json ... ``` or ``` ... ``` wrapping
+    // Try to find JSON inside code blocks first
     const codeBlockMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/g);
     
-    // Try each code block to find one with "files"
     if (codeBlockMatch) {
+      console.log("[CodeAI] Blocos de código encontrados:", codeBlockMatch.length);
       for (const block of codeBlockMatch) {
         const inner = block.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '').trim();
         if (inner.includes('"files"')) {
+          console.log("[CodeAI] Bloco com 'files' encontrado, tamanho:", inner.length);
           raw = inner;
           break;
         }
       }
+    } else {
+      console.log("[CodeAI] Nenhum bloco de código encontrado");
     }
 
-    // Step 2: Find the start of the JSON object with "files"
     const filesIdx = raw.indexOf('"files"');
-    if (filesIdx === -1) return null;
+    if (filesIdx === -1) {
+      console.error("[CodeAI] ❌ Palavra 'files' NÃO encontrada na resposta. A IA não gerou o JSON de alterações.");
+      console.log("[CodeAI] Últimos 500 chars da resposta:", response.slice(-500));
+      return null;
+    }
     
-    // Find the opening { before "files"
     let startIdx = -1;
     for (let i = filesIdx - 1; i >= 0; i--) {
       if (raw[i] === '{') { startIdx = i; break; }
     }
-    if (startIdx === -1) return null;
+    if (startIdx === -1) {
+      console.error("[CodeAI] ❌ Não encontrou '{' antes de 'files'");
+      return null;
+    }
     
-    // Step 3: Use brace counting to find the matching closing }
     let depth = 0;
     let endIdx = -1;
     let inString = false;
@@ -289,12 +300,10 @@ const ChatPanel = () => {
     
     for (let i = startIdx; i < raw.length; i++) {
       const ch = raw[i];
-      
       if (escape) { escape = false; continue; }
       if (ch === '\\' && inString) { escape = true; continue; }
       if (ch === '"' && !escape) { inString = !inString; continue; }
       if (inString) continue;
-      
       if (ch === '{') depth++;
       if (ch === '}') {
         depth--;
@@ -303,47 +312,61 @@ const ChatPanel = () => {
     }
     
     if (endIdx === -1) {
-      console.error("JSON truncado - chaves não balanceadas");
+      console.error("[CodeAI] ❌ JSON truncado - chaves não balanceadas. max_tokens pode ser insuficiente.");
       return null;
     }
     
     let jsonStr = raw.substring(startIdx, endIdx + 1);
+    console.log("[CodeAI] JSON extraído, tamanho:", jsonStr.length);
     
-    // Step 4: Try to parse, with cleanup if needed
     try {
-      return JSON.parse(jsonStr);
+      const result = JSON.parse(jsonStr);
+      console.log("[CodeAI] ✅ JSON parseado com sucesso. Arquivos:", result.files?.length || 0);
+      if (result.files) {
+        result.files.forEach((f: any, i: number) => {
+          console.log(`[CodeAI]   Arquivo ${i + 1}: ${f.path} (${f.content?.length || 0} chars, action: ${f.action || 'update'})`);
+        });
+      }
+      return result;
     } catch (e1) {
-      // Fix common issues
-      jsonStr = jsonStr
-        .replace(/,\s*}/g, '}')
-        .replace(/,\s*]/g, ']');
+      jsonStr = jsonStr.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
       try {
-        return JSON.parse(jsonStr);
+        const result = JSON.parse(jsonStr);
+        console.log("[CodeAI] ✅ JSON parseado após limpeza. Arquivos:", result.files?.length || 0);
+        return result;
       } catch (e2) {
-        console.error("Falha ao parsear JSON da IA:", e2, "\nJSON:", jsonStr.substring(0, 200));
+        console.error("[CodeAI] ❌ Falha ao parsear JSON:", e2);
+        console.log("[CodeAI] Primeiros 300 chars do JSON:", jsonStr.substring(0, 300));
         return null;
       }
     }
   };
 
   const applyFileChanges = async (response: string) => {
+    console.log("[CodeAI] === INICIANDO applyFileChanges ===");
+    console.log("[CodeAI] Tamanho da resposta:", response.length);
+    
     const parsed = extractJsonFromResponse(response);
     
     if (!parsed || !config) {
+      console.error("[CodeAI] ❌ Extração falhou. parsed:", parsed, "config:", !!config);
       if (response.length > 50) {
-        updateLastAssistantMessage(cleanResponse(response) + "\n\n⚠️ A IA não gerou alterações de código nesta resposta. Tente ser mais específico no seu pedido.");
+        updateLastAssistantMessage(cleanResponse(response) + "\n\n⚠️ A IA não gerou o bloco JSON de alterações. Isso significa que nenhuma modificação foi feita. Tente novamente com um pedido mais específico, como: \"Mude o título da página para 'Olá Mundo'\"");
       }
       return;
     }
 
     const { files } = parsed;
     if (!Array.isArray(files) || files.length === 0) {
+      console.error("[CodeAI] ❌ Array 'files' vazio ou inválido");
       updateLastAssistantMessage(cleanResponse(response) + "\n\n⚠️ Nenhum arquivo para alterar foi encontrado na resposta.");
       return;
     }
 
     const validFiles = files.filter((f: any) => f.path && f.content);
+    console.log("[CodeAI] Arquivos válidos:", validFiles.length, "de", files.length);
     if (validFiles.length === 0) {
+      console.error("[CodeAI] ❌ Nenhum arquivo tem path+content válidos");
       updateLastAssistantMessage(cleanResponse(response) + "\n\n⚠️ Arquivos sem conteúdo válido na resposta.");
       return;
     }
@@ -356,6 +379,7 @@ const ChatPanel = () => {
     let successCount = 0;
     let errorCount = 0;
     let lastSuccessFile: { path: string; content: string } | null = null;
+    const commitUrls: string[] = [];
 
     for (let i = 0; i < validFiles.length; i++) {
       const file = validFiles[i];
@@ -369,6 +393,7 @@ const ChatPanel = () => {
         const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
         
         // Get SHA
+        console.log(`[CodeAI] Buscando SHA de ${file.path}...`);
         try {
           const readRes = await fetch(CHAT_URL, {
             method: "POST",
@@ -384,12 +409,16 @@ const ChatPanel = () => {
           if (readRes.ok) {
             const data = await readRes.json();
             sha = data.sha;
+            console.log(`[CodeAI] SHA obtido: ${sha?.substring(0, 7)}`);
+          } else {
+            console.log(`[CodeAI] Arquivo novo (sem SHA): ${file.path}`);
           }
         } catch { /* new file */ }
 
         // Write with retry
         let writeSuccess = false;
         for (let attempt = 0; attempt < 3 && !writeSuccess; attempt++) {
+          console.log(`[CodeAI] Tentativa ${attempt + 1} de escrita: ${file.path}`);
           try {
             const writeRes = await fetch(CHAT_URL, {
               method: "POST",
@@ -405,9 +434,13 @@ const ChatPanel = () => {
             });
 
             if (writeRes.ok) {
+              const result = await writeRes.json();
               writeSuccess = true;
               successCount++;
               lastSuccessFile = { path: file.path, content: file.content };
+              const commitUrl = result.commit?.html_url || `https://github.com/${config.repoOwner}/${config.repoName}/commits/main`;
+              commitUrls.push(commitUrl);
+              console.log(`[CodeAI] ✅ Escrita OK: ${file.path} - Commit: ${commitUrl}`);
               setFileOps(prev => prev.map((op, idx) => idx === i ? { ...op, status: "done" } : op));
             } else {
               const errText = await writeRes.text();
@@ -450,10 +483,16 @@ const ChatPanel = () => {
       }
     }
 
+    console.log(`[CodeAI] === RESULTADO: ${successCount} sucesso, ${errorCount} erro ===`);
+    
     let statusMsg = "";
-    if (successCount > 0) statusMsg += `\n\n✅ ${successCount} arquivo(s) commitado(s) no GitHub com sucesso!`;
-    if (errorCount > 0) statusMsg += `\n\n⚠️ ${errorCount} arquivo(s) com erro.`;
-    if (successCount > 0) statusMsg += `\n\n📁 Verifique o código na aba "Código" ou no GitHub.`;
+    if (successCount > 0) {
+      statusMsg += `\n\n✅ ${successCount} arquivo(s) commitado(s) no GitHub com sucesso!`;
+      const ghLink = `https://github.com/${config.repoOwner}/${config.repoName}/commits/main`;
+      statusMsg += `\n\n🔗 [Ver commits no GitHub](${ghLink})`;
+      statusMsg += `\n\n⏳ **Nota:** Se seu site usa GitHub Pages, as alterações podem levar 1-2 minutos para aparecer no deploy. Verifique o código na aba "Código" para confirmar que a modificação foi feita.`;
+    }
+    if (errorCount > 0) statusMsg += `\n\n❌ ${errorCount} arquivo(s) com erro ao escrever.`;
     if (statusMsg) updateLastAssistantMessage(cleanResponse(response) + statusMsg);
 
     // Auto-show the last modified file in Code tab
