@@ -6,9 +6,20 @@ import { Progress } from "@/components/ui/progress";
 import { supabase } from "@/integrations/supabase/client";
 
 const cleanResponse = (text: string): string => {
-  let cleaned = text.replace(/```json\s*\{[\s\S]*?"files"\s*:\s*\[[\s\S]*?\]\s*\}\s*```/g, "");
-  cleaned = cleaned.replace(/```\s*\{[\s\S]*?"files"\s*:\s*\[[\s\S]*?\]\s*\}\s*```/g, "");
+  // Remove JSON code blocks containing "files" array
+  let cleaned = text;
+  
+  // Find and remove ```json { "files": [...] } ``` blocks
+  const codeBlockRegex = /```(?:json)?\s*[\s\S]*?```/g;
+  cleaned = cleaned.replace(codeBlockRegex, (match) => {
+    if (match.includes('"files"') && match.includes('"path"')) {
+      return ''; // Remove only file-change JSON blocks
+    }
+    return match; // Keep other code blocks
+  });
+  
   cleaned = cleaned.replace(/\n\n[✅⚠️].*$/gm, "");
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
   return cleaned.trim();
 };
 
@@ -242,34 +253,77 @@ const ChatPanel = () => {
   };
 
   const extractJsonFromResponse = (response: string): any | null => {
-    // Pattern 1: ```json { "files": [...] } ```
-    let match = response.match(/```json\s*(\{[\s\S]*?"files"\s*:\s*\[[\s\S]*?\]\s*\})\s*```/);
-    if (match) { try { return JSON.parse(match[1]); } catch {} }
-
-    // Pattern 2: ``` { "files": [...] } ```
-    match = response.match(/```\s*(\{[\s\S]*?"files"\s*:\s*\[[\s\S]*?\]\s*\})\s*```/);
-    if (match) { try { return JSON.parse(match[1]); } catch {} }
-
-    // Pattern 3: raw JSON
-    match = response.match(/(\{[\s\S]*?"files"\s*:\s*\[\s*\{[\s\S]*?"path"[\s\S]*?\]\s*\})/);
-    if (match) { try { return JSON.parse(match[1]); } catch {} }
-
-    // Pattern 4: Try to fix common JSON issues (trailing commas, control chars)
-    const jsonStart = response.indexOf('{"files"');
-    if (jsonStart === -1) return null;
+    // Step 1: Strip markdown code blocks to get raw JSON
+    let raw = response;
     
-    // Find matching closing brace
-    let depth = 0;
-    let end = -1;
-    for (let i = jsonStart; i < response.length; i++) {
-      if (response[i] === '{') depth++;
-      if (response[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+    // Remove ```json ... ``` or ``` ... ``` wrapping
+    const codeBlockMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/g);
+    
+    // Try each code block to find one with "files"
+    if (codeBlockMatch) {
+      for (const block of codeBlockMatch) {
+        const inner = block.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '').trim();
+        if (inner.includes('"files"')) {
+          raw = inner;
+          break;
+        }
+      }
     }
-    if (end === -1) return null; // truncated JSON
+
+    // Step 2: Find the start of the JSON object with "files"
+    const filesIdx = raw.indexOf('"files"');
+    if (filesIdx === -1) return null;
     
-    let jsonStr = response.substring(jsonStart, end + 1);
-    jsonStr = jsonStr.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']').replace(/[\x00-\x1F\x7F]/g, '');
-    try { return JSON.parse(jsonStr); } catch { return null; }
+    // Find the opening { before "files"
+    let startIdx = -1;
+    for (let i = filesIdx - 1; i >= 0; i--) {
+      if (raw[i] === '{') { startIdx = i; break; }
+    }
+    if (startIdx === -1) return null;
+    
+    // Step 3: Use brace counting to find the matching closing }
+    let depth = 0;
+    let endIdx = -1;
+    let inString = false;
+    let escape = false;
+    
+    for (let i = startIdx; i < raw.length; i++) {
+      const ch = raw[i];
+      
+      if (escape) { escape = false; continue; }
+      if (ch === '\\' && inString) { escape = true; continue; }
+      if (ch === '"' && !escape) { inString = !inString; continue; }
+      if (inString) continue;
+      
+      if (ch === '{') depth++;
+      if (ch === '}') {
+        depth--;
+        if (depth === 0) { endIdx = i; break; }
+      }
+    }
+    
+    if (endIdx === -1) {
+      console.error("JSON truncado - chaves não balanceadas");
+      return null;
+    }
+    
+    let jsonStr = raw.substring(startIdx, endIdx + 1);
+    
+    // Step 4: Try to parse, with cleanup if needed
+    try {
+      return JSON.parse(jsonStr);
+    } catch (e1) {
+      // Fix common issues
+      jsonStr = jsonStr
+        .replace(/,\s*}/g, '}')
+        .replace(/,\s*]/g, ']');
+      try {
+        return JSON.parse(jsonStr);
+      } catch (e2) {
+        console.error("Falha ao parsear JSON da IA:", e2, "\nJSON:", jsonStr.substring(0, 200));
+        return null;
+      }
+    }
   };
 
   const applyFileChanges = async (response: string) => {
