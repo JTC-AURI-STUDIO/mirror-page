@@ -28,7 +28,7 @@ const WorkspaceLayout = () => {
 
   useEffect(() => {
     if (!session?.user?.id) return;
-    supabase.from("profiles").select("username").eq("user_id", session.user.id).single()
+    supabase.from("profiles").select("username").eq("user_id", session.user.id).maybeSingle()
       .then(({ data }) => { if (data) setUsername(data.username); });
   }, [session]);
 
