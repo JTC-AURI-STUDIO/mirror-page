@@ -1,9 +1,9 @@
 import React, { useState } from "react";
 import { useAppContext } from "@/context/AppContext";
-import { Github, Key, Link, ArrowRight, Zap } from "lucide-react";
+import { Github, Key, Link, ArrowRight, Zap, Clock } from "lucide-react";
 
 const SetupPanel = () => {
-  const { setConfig } = useAppContext();
+  const { setConfig, savedConfigs, sessions, loadSession } = useAppContext();
   const [token, setToken] = useState("");
   const [repoUrl, setRepoUrl] = useState("");
   const [error, setError] = useState("");
@@ -20,7 +20,6 @@ const SetupPanel = () => {
       return;
     }
 
-    // Parse repo URL
     const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
     if (!match) {
       setError("URL do repositório inválida. Use: https://github.com/usuario/repositorio");
@@ -29,7 +28,6 @@ const SetupPanel = () => {
 
     setIsConnecting(true);
 
-    // Test token
     try {
       const res = await fetch(`https://api.github.com/repos/${match[1]}/${match[2]}`, {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.v3+json" },
@@ -54,6 +52,15 @@ const SetupPanel = () => {
     setIsConnecting(false);
   };
 
+  // Use saved config (pre-fill token)
+  const handleUseSavedConfig = (cfg: typeof savedConfigs[0]) => {
+    setToken(cfg.token);
+    setRepoUrl(cfg.repoUrl);
+  };
+
+  // Recent sessions grouped by repo
+  const recentSessions = sessions.slice(0, 5);
+
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
       <div className="w-full max-w-lg space-y-8">
@@ -69,6 +76,56 @@ const SetupPanel = () => {
             Conecte seu repositório GitHub e use IA para editar seu projeto com comandos em linguagem natural.
           </p>
         </div>
+
+        {/* Recent Sessions */}
+        {recentSessions.length > 0 && (
+          <div className="glass rounded-xl p-5 space-y-3">
+            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Clock className="h-4 w-4 text-primary" />
+              Chats Recentes
+            </h3>
+            <div className="space-y-2">
+              {recentSessions.map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => loadSession(s.id)}
+                  className="w-full flex items-center gap-3 rounded-lg border border-border px-3 py-2.5 text-left hover:border-primary/40 hover:bg-muted transition-all"
+                >
+                  <Github className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-foreground truncate">{s.title}</p>
+                    <p className="text-[10px] text-muted-foreground font-mono">
+                      {s.config.repoOwner}/{s.config.repoName}
+                    </p>
+                  </div>
+                  <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Saved Configs Quick Access */}
+        {savedConfigs.length > 0 && (
+          <div className="glass rounded-xl p-5 space-y-3">
+            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Key className="h-4 w-4 text-primary" />
+              Credenciais Salvas
+            </h3>
+            <div className="flex flex-wrap gap-2">
+              {savedConfigs.map((cfg, i) => (
+                <button
+                  key={i}
+                  onClick={() => handleUseSavedConfig(cfg)}
+                  className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs hover:border-primary/40 hover:bg-muted transition-all"
+                >
+                  <Github className="h-3 w-3 text-muted-foreground" />
+                  <span className="font-mono text-foreground">{cfg.repoOwner}/{cfg.repoName}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Form */}
         <div className="space-y-4 glass rounded-xl p-6">
